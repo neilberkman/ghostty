@@ -25,6 +25,12 @@ const log = std.log.scoped(.embedded_window);
 
 pub const resourcesDir = internal_os.resourcesDir;
 
+/// Whether this runtime can service the `.start_text_drag` action.
+/// The embedded runtime only implements text drag on the macOS AppKit
+/// embedder; iOS and other Darwin variants route through different
+/// callbacks and don't provide an NSDraggingSession pathway.
+pub const supports_text_drag = builtin.target.os.tag == .macos;
+
 pub const App = struct {
     /// Because we only expect the embedding API to be used in embedded
     /// environments, the options are extern so that we can expose it

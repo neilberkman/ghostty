@@ -5,6 +5,9 @@ const internal_os = @import("../os/main.zig");
 const apprt = @import("../apprt.zig");
 pub const resourcesDir = internal_os.resourcesDir;
 
+/// The no-op runtime has no surface to drag from.
+pub const supports_text_drag = false;
+
 pub const App = struct {
     /// Always return false as there is no apprt to communicate with.
     pub fn performIpc(

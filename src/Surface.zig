@@ -261,6 +261,36 @@ const Mouse = struct {
     /// The last x/y in the cursor position for links. We use this to
     /// only process link hover events when the mouse actually moves cells.
     link_point: ?terminal.point.Coordinate = null,
+
+    /// Set when a left single-click lands inside an existing selection.
+    /// Defers clearing the selection so dragging can start instead.
+    pending_drag: bool = false,
+
+    /// Set to true once a drag action has been emitted for the current press.
+    drag_started: bool = false,
+
+    const text_drag_threshold: f64 = 3.0;
+
+    fn armTextDrag(self: *Mouse) void {
+        self.pending_drag = true;
+        self.drag_started = false;
+    }
+
+    fn resetTextDrag(self: *Mouse) void {
+        self.pending_drag = false;
+        self.drag_started = false;
+    }
+
+    fn shouldClearSelectionOnRelease(self: *const Mouse) bool {
+        return self.pending_drag and !self.drag_started;
+    }
+
+    fn textDragThresholdExceeded(self: *const Mouse, pos: apprt.CursorPos) bool {
+        const dx = pos.x - self.left_click_xpos;
+        const dy = pos.y - self.left_click_ypos;
+        const dist_sq = dx * dx + dy * dy;
+        return dist_sq >= text_drag_threshold * text_drag_threshold;
+    }
 };
 
 /// Keyboard state for the surface.
@@ -324,6 +354,7 @@ const DerivedConfig = struct {
     macos_non_native_fullscreen: configpkg.NonNativeFullscreen,
     macos_option_as_alt: ?input.OptionAsAlt,
     selection_clear_on_copy: bool,
+    selection_drag_modifier: configpkg.Config.SelectionDragModifier,
     selection_clear_on_typing: bool,
     selection_word_chars: []const u21,
     vt_kam_allowed: bool,
@@ -402,6 +433,7 @@ const DerivedConfig = struct {
             .macos_non_native_fullscreen = config.@"macos-non-native-fullscreen",
             .macos_option_as_alt = config.@"macos-option-as-alt",
             .selection_clear_on_copy = config.@"selection-clear-on-copy",
+            .selection_drag_modifier = config.@"selection-drag-modifier",
             .selection_clear_on_typing = config.@"selection-clear-on-typing",
             .selection_word_chars = try alloc.dupe(u21, config.@"selection-word-chars".codepoints),
             .vt_kam_allowed = config.@"vt-kam-allowed",
@@ -3296,6 +3328,9 @@ pub fn focusCallback(self: *Surface, focused: bool) !void {
     }, .{ .forever = {} });
 
     if (!focused) unfocused: {
+        // Clear any pending drag state since we won't receive a release event.
+        self.mouse.resetTextDrag();
+
         // If we lost focus and we have a keypress, then we want to send a key
         // release event for it. Depending on the apprt, this CAN result in
         // duplicate key release events, but that is better than not sending
@@ -3708,6 +3743,16 @@ fn mouseShiftCapture(self: *const Surface, lock: bool) bool {
     };
 }
 
+fn textDragModifierSatisfied(
+    modifier: configpkg.Config.SelectionDragModifier,
+    mods: input.Mods,
+) bool {
+    return switch (modifier) {
+        .false => true,
+        .@"ctrl-or-super" => mods.ctrlOrSuper(),
+    };
+}
+
 /// Returns true if the mouse is currently captured by the terminal
 /// (i.e. reporting events).
 pub fn mouseCaptured(self: *Surface) bool {
@@ -3799,6 +3844,16 @@ pub fn mouseButtonCallback(
                 .unlocked,
             );
         }
+
+        // If we had a pending drag that never started, clear the selection now.
+        // This handles the "click on selection without dragging" case.
+        if (self.mouse.shouldClearSelectionOnRelease()) {
+            self.renderer_state.mutex.lock();
+            defer self.renderer_state.mutex.unlock();
+            try self.io.terminal.screens.active.select(null);
+            try self.queueRender();
+        }
+        self.mouse.resetTextDrag();
 
         // The selection clipboard is only updated for left-click drag when
         // the left button is released. This is to avoid the clipboard
@@ -3959,8 +4014,24 @@ pub fn mouseButtonCallback(
         switch (self.mouse.left_click_count) {
             // Single click
             1 => {
-                // If we have a selection, clear it. This always happens.
-                if (self.io.terminal.screens.active.selection != null) {
+                if (self.io.terminal.screens.active.selection) |sel| clear: {
+                    // On runtimes that service the `.start_text_drag`
+                    // action, a click inside an existing selection defers
+                    // clearing so motion can initiate a drag-and-drop of
+                    // the selected text. Any modifier requirement must
+                    // also be satisfied.
+                    if (comptime apprt.runtime.supports_text_drag) {
+                        if (sel.contains(screen, pin.*) and
+                            textDragModifierSatisfied(
+                                self.config.selection_drag_modifier,
+                                mods,
+                            ))
+                        {
+                            self.mouse.armTextDrag();
+                            break :clear;
+                        }
+                    }
+
                     try self.io.terminal.screens.active.select(null);
                     try self.queueRender();
                 }
@@ -4610,6 +4681,46 @@ pub fn cursorPosCallback(
         // properly make some mouse reports, but we don't keep track of the
         // count because we don't want to handle selection.
         if (self.mouse.left_click_count == 0) break :select;
+
+        // If pending_drag is set, we're dragging FROM a selection.
+        // Check if we've exceeded the drag threshold, then emit the action.
+        if (self.mouse.pending_drag and !self.mouse.drag_started) {
+            if (!self.mouse.textDragThresholdExceeded(pos)) {
+                // Still within threshold — suppress selection-drag but
+                // don't fall through yet.
+                break :select;
+            }
+
+            // Extract the selection text while we still hold the lock.
+            if (self.renderer_state.terminal.screens.active.selection) |sel| text: {
+                const text = self.renderer_state.terminal.screens.active.selectionString(self.alloc, .{
+                    .sel = sel,
+                    .trim = false,
+                }) catch break :text;
+                defer self.alloc.free(text);
+
+                // Drop the lock around the apprt call. The runtime may
+                // reentrantly call into core (e.g. AppKit drag session
+                // callbacks), and we must not hold the mutex across that.
+                self.renderer_state.mutex.unlock();
+                const started = self.rt_app.performAction(
+                    .{ .surface = self },
+                    .start_text_drag,
+                    .{ .text = text },
+                ) catch false;
+                self.renderer_state.mutex.lock();
+
+                if (started) {
+                    self.mouse.drag_started = true;
+                    break :select;
+                }
+            }
+
+            // Drag could not be started (no selection, alloc failed,
+            // or the apprt refused). Reset state and fall through to
+            // normal selection-drag handling so motion still works.
+            self.mouse.resetTextDrag();
+        }
 
         // If our terminal screen changed then we don't process this. We don't
         // invalidate our pin or mouse state because if the screen switches
@@ -6369,6 +6480,75 @@ fn testMouseSelectionIsNull(
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.io.getProcessInfo(info);
+}
+
+test "Surface: text drag state transitions" {
+    var mouse: Mouse = .{
+        .pending_drag = true,
+        .drag_started = true,
+    };
+
+    // Arming from a click inside selection should always clear prior drag state.
+    mouse.armTextDrag();
+    try std.testing.expect(mouse.pending_drag);
+    try std.testing.expect(!mouse.drag_started);
+
+    // Release without drag should clear selection.
+    try std.testing.expect(mouse.shouldClearSelectionOnRelease());
+
+    // A started drag should preserve selection on release.
+    mouse.drag_started = true;
+    try std.testing.expect(!mouse.shouldClearSelectionOnRelease());
+
+    mouse.resetTextDrag();
+    try std.testing.expect(!mouse.pending_drag);
+    try std.testing.expect(!mouse.drag_started);
+}
+
+test "Surface: text drag threshold is euclidean and inclusive at 3px" {
+    var mouse: Mouse = .{
+        .left_click_xpos = 10.0,
+        .left_click_ypos = 10.0,
+    };
+
+    // sqrt(4) < 3
+    try std.testing.expect(!mouse.textDragThresholdExceeded(.{ .x = 12.0, .y = 10.0 }));
+
+    // sqrt(9) == 3
+    try std.testing.expect(mouse.textDragThresholdExceeded(.{ .x = 13.0, .y = 10.0 }));
+
+    // sqrt(8) ~= 2.83 < 3
+    try std.testing.expect(!mouse.textDragThresholdExceeded(.{ .x = 12.0, .y = 12.0 }));
+
+    // Reverse direction still uses euclidean distance.
+    try std.testing.expect(mouse.textDragThresholdExceeded(.{ .x = 7.0, .y = 10.0 }));
+}
+
+test "Surface: text drag modifier gating" {
+    // No modifier requirement means any click in selection can arm drag.
+    try std.testing.expect(textDragModifierSatisfied(.false, .{}));
+
+    // ctrl-or-super must match platform conventions.
+    try std.testing.expect(!textDragModifierSatisfied(.@"ctrl-or-super", .{}));
+    if (builtin.target.os.tag.isDarwin()) {
+        try std.testing.expect(textDragModifierSatisfied(
+            .@"ctrl-or-super",
+            .{ .super = true },
+        ));
+        try std.testing.expect(!textDragModifierSatisfied(
+            .@"ctrl-or-super",
+            .{ .ctrl = true },
+        ));
+    } else {
+        try std.testing.expect(textDragModifierSatisfied(
+            .@"ctrl-or-super",
+            .{ .ctrl = true },
+        ));
+        try std.testing.expect(!textDragModifierSatisfied(
+            .@"ctrl-or-super",
+            .{ .super = true },
+        ));
+    }
 }
 
 test "Surface: selection logic" {

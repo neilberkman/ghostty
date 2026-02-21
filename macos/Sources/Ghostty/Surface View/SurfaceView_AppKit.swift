@@ -2137,6 +2137,79 @@ extension Ghostty.SurfaceView: NSMenuItemValidation {
     }
 }
 
+// MARK: NSDraggingSource (text drag from selection)
+
+extension Ghostty.SurfaceView: NSDraggingSource {
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        // Include .generic so that the drag survives when the user is
+        // holding Command at drag start — AppKit intersects our mask
+        // with a modifier-derived mask (Command → .generic, Option →
+        // .copy, Control → .link). A source mask of only .copy makes
+        // the effective mask empty under Command, which is exactly the
+        // state the `selection-drag-modifier = ctrl-or-super` option
+        // produces on macOS.
+        return [.copy, .generic]
+    }
+
+    @discardableResult
+    func startTextDrag(_ text: String) -> Bool {
+        // AppKit requires the view to be installed in a window and a
+        // current mouse event to originate the drag session.
+        guard window != nil else { return false }
+        guard let event = NSApp.currentEvent else { return false }
+        guard !text.isEmpty else { return false }
+
+        let item = NSDraggingItem(pasteboardWriter: text as NSString)
+
+        // Build a drag image showing the first line of printable text,
+        // stripping ASCII control characters that terminals may include
+        // (e.g. prompt escape delimiters \x01/\x02).
+        let maxWidth: CGFloat = 300
+        let padding: CGFloat = 4
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        let firstLine = text.prefix(while: { $0 != "\n" && $0 != "\r" })
+        let label = String(firstLine.filter { $0 >= " " || $0 == "\t" })
+
+        if !label.isEmpty {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: NSColor.textColor,
+            ]
+            let fullSize = (label as NSString).size(withAttributes: attrs)
+            let imageWidth = min(fullSize.width + padding * 2, maxWidth)
+            let imageHeight = fullSize.height + padding * 2
+
+            let dragImage = NSImage(size: NSSize(width: imageWidth, height: imageHeight))
+            dragImage.lockFocus()
+            let paraStyle = NSMutableParagraphStyle()
+            paraStyle.lineBreakMode = .byTruncatingTail
+            var drawAttrs = attrs
+            drawAttrs[.paragraphStyle] = paraStyle
+            (label as NSString).draw(
+                in: NSRect(x: padding, y: padding,
+                           width: imageWidth - padding * 2,
+                           height: imageHeight - padding * 2),
+                withAttributes: drawAttrs
+            )
+            dragImage.unlockFocus()
+
+            let mouseInWindow = event.locationInWindow
+            let mouseInView = convert(mouseInWindow, from: nil)
+            item.setDraggingFrame(
+                NSRect(x: mouseInView.x, y: mouseInView.y - imageHeight / 2,
+                       width: imageWidth, height: imageHeight),
+                contents: dragImage
+            )
+        }
+
+        beginDraggingSession(with: [item], event: event, source: self)
+        return true
+    }
+}
+
 // MARK: NSDraggingDestination
 
 extension Ghostty.SurfaceView {

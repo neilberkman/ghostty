@@ -3,6 +3,10 @@ pub const App = @import("gtk/App.zig");
 pub const Surface = @import("gtk/Surface.zig");
 pub const resourcesDir = @import("gtk/flatpak.zig").resourcesDir;
 
+/// GTK does not currently implement the `.start_text_drag` action;
+/// core can skip arming the drag state machine entirely.
+pub const supports_text_drag = false;
+
 // The exported API, custom for the apprt.
 pub const class = @import("gtk/class.zig");
 pub const WeakRef = @import("gtk/weak_ref.zig").WeakRef;

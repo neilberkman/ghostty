@@ -730,6 +730,12 @@ typedef struct {
   size_t len;
 } ghostty_action_mouse_over_link_s;
 
+// apprt.action.StartTextDrag
+typedef struct {
+  const char *text;
+  size_t len;
+} ghostty_action_start_text_drag_s;
+
 // apprt.action.SizeLimit
 typedef struct {
   uint32_t min_width;
@@ -949,6 +955,7 @@ typedef enum {
   GHOSTTY_ACTION_SEARCH_SELECTED,
   GHOSTTY_ACTION_READONLY,
   GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD,
+  GHOSTTY_ACTION_START_TEXT_DRAG,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -990,6 +997,7 @@ typedef union {
   ghostty_action_search_total_s search_total;
   ghostty_action_search_selected_s search_selected;
   ghostty_action_readonly_e readonly;
+  ghostty_action_start_text_drag_s start_text_drag;
 } ghostty_action_u;
 
 typedef struct {

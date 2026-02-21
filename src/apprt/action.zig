@@ -343,6 +343,10 @@ pub const Action = union(Key) {
     /// otherwise the terminal-set title.
     copy_title_to_clipboard,
 
+    /// Start a text drag operation with the given content.
+    /// Emitted when the user drags from within a text selection.
+    start_text_drag: StartTextDrag,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -410,6 +414,7 @@ pub const Action = union(Key) {
         search_selected,
         readonly,
         copy_title_to_clipboard,
+        start_text_drag,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -660,6 +665,23 @@ pub const MouseOverLink = struct {
         return .{
             .url = self.url.ptr,
             .len = self.url.len,
+        };
+    }
+};
+
+pub const StartTextDrag = struct {
+    text: [:0]const u8,
+
+    // Sync with: ghostty_action_start_text_drag_s
+    pub const C = extern struct {
+        text: [*]const u8,
+        len: usize,
+    };
+
+    pub fn cval(self: StartTextDrag) C {
+        return .{
+            .text = self.text.ptr,
+            .len = self.text.len,
         };
     }
 };

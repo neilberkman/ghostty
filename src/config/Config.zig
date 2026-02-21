@@ -735,6 +735,27 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// on the same selection.
 @"selection-clear-on-copy": bool = false,
 
+/// Require a modifier key to start dragging from an existing selection.
+///
+/// By default (`false`), dragging from selected text starts when a left-click
+/// lands inside the selection and the pointer moves past the drag threshold.
+///
+/// Set this to `ctrl-or-super` to require holding:
+///
+///   * `super` (Command) on macOS
+///   * `ctrl` on other platforms
+///
+/// This only affects drag-and-drop from an existing selection. Normal
+/// selection behavior is unchanged.
+///
+/// Valid values are:
+///
+///   * `false`
+///   * `ctrl-or-super`
+///
+/// Available since: 1.3.0
+@"selection-drag-modifier": SelectionDragModifier = .false,
+
 /// Characters that mark word boundaries during text selection operations such
 /// as double-clicking. When selecting a word, the selection will stop at any
 /// of these characters.
@@ -9057,6 +9078,12 @@ pub const MouseShiftCapture = enum {
     never,
 };
 
+/// See selection-drag-modifier
+pub const SelectionDragModifier = enum {
+    false,
+    @"ctrl-or-super",
+};
+
 /// See mouse-scroll-multiplier
 pub const MouseScrollMultiplier = struct {
     const Self = @This();
@@ -10775,6 +10802,26 @@ test "theme specifying light/dark sets theme usage in conditional state" {
 
         try testing.expect(cfg.@"window-theme" == .system);
         try testing.expect(cfg._conditional_set.contains(.theme));
+    }
+}
+
+test "selection-drag-modifier parse" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var it: TestIterator = .{ .data = &.{
+            "--selection-drag-modifier=ctrl-or-super",
+        } };
+        try cfg.loadIter(alloc, &it);
+        try cfg.finalize();
+
+        try testing.expectEqual(
+            SelectionDragModifier.@"ctrl-or-super",
+            cfg.@"selection-drag-modifier",
+        );
     }
 }
 

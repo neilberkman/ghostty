@@ -666,6 +666,8 @@ extension Ghostty {
                 return false
             case GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD:
                 return copyTitleToClipboard(app, target: target)
+            case GHOSTTY_ACTION_START_TEXT_DRAG:
+                return startTextDrag(app, target: target, v: action.action.start_text_drag)
             default:
                 Ghostty.logger.warning("unknown action action=\(action.tag.rawValue)")
                 return false
@@ -1649,6 +1651,17 @@ extension Ghostty {
             default:
                 return false
             }
+        }
+
+        private static func startTextDrag(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_start_text_drag_s) -> Bool {
+            guard let surface = target.target.surface else { return false }
+            guard let surfaceView = self.surfaceView(from: surface) else { return false }
+            let bytes = Data(bytes: v.text, count: Int(v.len))
+            let text = String(data: bytes, encoding: .utf8) ?? ""
+            return surfaceView.startTextDrag(text)
         }
 
         private static func promptTitle(
